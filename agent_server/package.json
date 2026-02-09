@@ -1,0 +1,16 @@
+{
+  "name": "ida-chat-agent-server",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "description": "Node.js agent server for IDA Chat using pi-mono",
+  "main": "server.mjs",
+  "dependencies": {
+    "@mariozechner/pi-ai": "^0.52.9",
+    "@mariozechner/pi-agent-core": "^0.52.9",
+    "@sinclair/typebox": "^0.34.41"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
