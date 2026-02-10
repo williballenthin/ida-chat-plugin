@@ -1,10 +1,9 @@
-"""Tests for the pi-mono bridge (Python <-> Node.js agent server).
+"""Tests for the pi-mono bridge (embedded JS via PythonMonkey).
 
-Tests the bridge lifecycle, initialization, and basic communication
+Tests the bridge lifecycle, initialization, and communication
 without requiring an LLM API key (where possible).
 """
 
-import asyncio
 import json
 import os
 import sys
@@ -14,31 +13,25 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pi_mono_bridge import PiMonoBridge, AgentEvent, AGENT_SERVER_SCRIPT
+from pi_mono_bridge import PiMonoBridge, AgentEvent, AGENT_HARNESS
 
 
 class TestBridgeSetup:
-    """Verify agent server files exist and Node.js is available."""
+    """Verify agent harness files exist and PythonMonkey is available."""
 
-    def test_agent_server_script_exists(self):
-        assert AGENT_SERVER_SCRIPT.exists(), f"Missing: {AGENT_SERVER_SCRIPT}"
+    def test_agent_harness_exists(self):
+        assert AGENT_HARNESS.exists(), f"Missing: {AGENT_HARNESS}"
 
-    def test_node_modules_installed(self):
-        node_modules = AGENT_SERVER_SCRIPT.parent / "node_modules"
-        assert node_modules.is_dir(), "Run: cd agent_server && npm install"
+    def test_pythonmonkey_importable(self):
+        import pythonmonkey as pm
+        assert pm is not None
 
-    def test_pi_ai_package_exists(self):
-        pi_ai = AGENT_SERVER_SCRIPT.parent / "node_modules" / "@mariozechner" / "pi-ai"
-        assert pi_ai.is_dir(), "@mariozechner/pi-ai not installed"
-
-    def test_pi_agent_core_exists(self):
-        core = AGENT_SERVER_SCRIPT.parent / "node_modules" / "@mariozechner" / "pi-agent-core"
-        assert core.is_dir(), "@mariozechner/pi-agent-core not installed"
-
-    def test_find_node(self):
-        node = PiMonoBridge._find_node()
-        assert node is not None
-        assert os.path.isfile(node)
+    def test_harness_loadable(self):
+        import pythonmonkey as pm
+        harness = pm.require(str(AGENT_HARNESS))
+        assert harness is not None
+        assert harness.init is not None
+        assert harness.prompt is not None
 
 
 class TestAgentEvent:
@@ -54,12 +47,12 @@ class TestAgentEvent:
             "type": "tool_call",
             "toolCallId": "tc_123",
             "toolName": "ida_script",
-            "args": {"code": "print(42)"},
+            "code": "print(42)",
         })
         assert e.type == "tool_call"
         assert e.tool_call_id == "tc_123"
         assert e.tool_name == "ida_script"
-        assert e.args == {"code": "print(42)"}
+        assert e.code == "print(42)"
 
     def test_done_event(self):
         e = AgentEvent({"type": "done", "turns": 3})
@@ -73,42 +66,126 @@ class TestAgentEvent:
         assert e.turn == 0
 
 
-@pytest.mark.asyncio
 class TestBridgeLifecycle:
-    """Test bridge start/stop without sending prompts."""
+    """Test bridge start/stop."""
 
-    async def test_start_and_stop(self):
-        """Bridge can start the Node.js server and stop it cleanly."""
+    def test_start_and_stop(self):
+        """Bridge can start and stop cleanly."""
         bridge = PiMonoBridge()
-        # Use a model that exists in the registry (won't make API calls yet)
-        await bridge.start(
+        bridge.start(
             system_prompt="test",
-            model="openrouter/meta-llama/llama-3.3-70b-instruct:free",
+            model="openrouter/test-model",
+            tool_callback=lambda code: "mock",
+            api_key="fake-key",
         )
         assert bridge.is_running
-        await bridge.stop()
+        bridge.stop()
         assert not bridge.is_running
 
-    async def test_double_start_raises(self):
+    def test_double_start_raises(self):
         """Starting an already-running bridge raises RuntimeError."""
         bridge = PiMonoBridge()
-        await bridge.start(
-            system_prompt="test",
-            model="openrouter/meta-llama/llama-3.3-70b-instruct:free",
-        )
+        bridge.start(system_prompt="test", model="openrouter/test", api_key="fake")
         try:
             with pytest.raises(RuntimeError, match="already running"):
-                await bridge.start(system_prompt="test", model="openrouter/meta-llama/llama-3.3-70b-instruct:free")
+                bridge.start(system_prompt="test", model="openrouter/test", api_key="fake")
         finally:
-            await bridge.stop()
+            bridge.stop()
 
-    async def test_stop_idempotent(self):
+    def test_stop_idempotent(self):
         """Stopping a stopped bridge doesn't raise."""
         bridge = PiMonoBridge()
-        await bridge.stop()  # Should not raise
+        bridge.stop()  # Should not raise
 
 
-@pytest.mark.asyncio
+class TestBridgeWithMockLLM:
+    """Test bridge with mock fetch (no real LLM calls)."""
+
+    def test_simple_prompt_mock(self):
+        """Bridge processes a prompt with mocked LLM response."""
+        def mock_fetch(url, method, headers_json, body):
+            return json.dumps({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "Hello from mock!",
+                        "tool_calls": None,
+                    }
+                }]
+            })
+
+        bridge = PiMonoBridge()
+        # Manually wire in mock fetch
+        import pythonmonkey as pm
+        bridge._harness = pm.require(str(AGENT_HARNESS))
+        bridge._harness.init("test", "openrouter/test", lambda c: "", mock_fetch, "fake")
+        bridge._running = True
+
+        try:
+            events = bridge.prompt("Hello")
+            types = [e.type for e in events]
+            assert "done" in types
+            text_events = [e for e in events if e.type == "text"]
+            assert len(text_events) > 0
+            assert "Hello from mock!" in text_events[0].text
+        finally:
+            bridge.stop()
+
+    def test_tool_call_mock(self):
+        """Bridge handles tool calls with mocked LLM."""
+        call_count = [0]
+
+        def mock_fetch(url, method, headers_json, body):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return json.dumps({
+                    "choices": [{
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [{
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "ida_script",
+                                    "arguments": json.dumps({"code": "print(42)"})
+                                }
+                            }]
+                        }
+                    }]
+                })
+            else:
+                return json.dumps({
+                    "choices": [{
+                        "message": {
+                            "role": "assistant",
+                            "content": "The answer is 42.",
+                            "tool_calls": None,
+                        }
+                    }]
+                })
+
+        def mock_tool(code):
+            return "42\n"
+
+        import pythonmonkey as pm
+        bridge = PiMonoBridge()
+        bridge._harness = pm.require(str(AGENT_HARNESS))
+        bridge._harness.init("test", "openrouter/test", mock_tool, mock_fetch, "fake")
+        bridge._running = True
+
+        try:
+            events = bridge.prompt("What is 42?")
+            types = [e.type for e in events]
+            assert "tool_call" in types
+            assert "tool_result" in types
+            assert "text" in types
+            assert "done" in types
+            assert call_count[0] == 2
+        finally:
+            bridge.stop()
+
+
 class TestBridgeWithLLM:
     """Tests that require an LLM API key (OpenRouter).
 
@@ -120,33 +197,29 @@ class TestBridgeWithLLM:
         if not os.environ.get("OPENROUTER_API_KEY"):
             pytest.skip("OPENROUTER_API_KEY not set")
 
-    async def test_simple_prompt(self):
+    def test_simple_prompt(self):
         """Send a simple prompt and receive a text response."""
         bridge = PiMonoBridge()
-        await bridge.start(
+        bridge.start(
             system_prompt="You are a helpful assistant. Respond briefly.",
             model="openrouter/meta-llama/llama-3.3-70b-instruct:free",
         )
         try:
-            events = []
-            async for event in bridge.prompt("Say hello in exactly 3 words."):
-                events.append(event)
-
+            events = bridge.prompt("Say hello in exactly 3 words.")
             types = [e.type for e in events]
-            assert "done" in types, f"Expected 'done' event, got: {types}"
-            # Should have at least a text event
+            assert "done" in types
             text_events = [e for e in events if e.type == "text"]
-            assert len(text_events) > 0, f"No text events received: {types}"
+            assert len(text_events) > 0
         finally:
-            await bridge.stop()
+            bridge.stop()
 
-    async def test_tool_call_flow(self, db):
+    def test_tool_call_flow(self, db):
         """Send a prompt that triggers a tool call and handle it."""
         from ida_codemode_sandbox import IdaSandbox
 
         sandbox = IdaSandbox(db)
         bridge = PiMonoBridge()
-        await bridge.start(
+        bridge.start(
             system_prompt=(
                 "You are a binary analyst. "
                 "When asked about a binary, ALWAYS use the ida_script tool to run analysis code. "
@@ -154,23 +227,12 @@ class TestBridgeWithLLM:
                 "Use print() to output results."
             ),
             model="openrouter/meta-llama/llama-3.3-70b-instruct:free",
+            tool_callback=sandbox.execute,
         )
         try:
-            events = []
-            async for event in bridge.prompt("Use the ida_script tool to call get_binary_info() and print the architecture."):
-                events.append(event)
-
-                if event.type == "tool_call" and event.tool_name == "ida_script":
-                    code = event.args.get("code", "")
-                    output = sandbox.execute(code)
-                    await bridge.send_tool_result(
-                        event.tool_call_id,
-                        output,
-                        is_error=False,
-                    )
-
+            events = bridge.prompt("Use the ida_script tool to call get_binary_info() and print the architecture.")
             types = [e.type for e in events]
-            assert "tool_call" in types, f"Expected tool_call event, got: {types}"
-            assert "done" in types, f"Expected done event, got: {types}"
+            assert "tool_call" in types
+            assert "done" in types
         finally:
-            await bridge.stop()
+            bridge.stop()

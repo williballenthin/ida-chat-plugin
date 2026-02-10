@@ -6,11 +6,22 @@
   "description": "Node.js agent server for IDA Chat using pi-mono",
   "main": "server.mjs",
   "dependencies": {
-    "@mariozechner/pi-ai": "^0.52.9",
     "@mariozechner/pi-agent-core": "^0.52.9",
-    "@sinclair/typebox": "^0.34.41"
+    "@mariozechner/pi-ai": "^0.52.9",
+    "@sinclair/typebox": "^0.34.41",
+    "buffer": "^6.0.3",
+    "events": "^3.3.0",
+    "inherits": "^2.0.4",
+    "path-browserify": "^1.0.1",
+    "process": "^0.11.10",
+    "stream-browserify": "^3.0.0",
+    "string_decoder": "^1.3.0",
+    "util": "^0.12.5"
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.3"
   }
 }

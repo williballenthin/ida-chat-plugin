@@ -10,7 +10,6 @@ These tests demonstrate:
 4. Tool execution through the codemode sandbox
 """
 
-import asyncio
 import os
 import sys
 from pathlib import Path
@@ -81,7 +80,6 @@ class CollectingCallback:
         return "\n".join(self.texts)
 
 
-@pytest.mark.asyncio
 class TestChatSessionWithLLM:
     """Full end-to-end chat session tests.
 
@@ -93,7 +91,7 @@ class TestChatSessionWithLLM:
         if not os.environ.get("OPENROUTER_API_KEY"):
             pytest.skip("OPENROUTER_API_KEY not set")
 
-    async def test_send_message_get_response(self, db):
+    def test_send_message_get_response(self, db):
         """Send a message to the chat session and verify we get a response."""
         callback = CollectingCallback()
         sandbox = IdaSandbox(db)
@@ -106,9 +104,9 @@ class TestChatSessionWithLLM:
             model="openrouter/meta-llama/llama-3.3-70b-instruct:free",
         )
 
-        await core.connect()
+        core.connect()
         try:
-            result = await core.process_message(
+            result = core.process_message(
                 "What architecture is this binary? Use the ida_script tool to find out."
             )
 
@@ -128,9 +126,9 @@ class TestChatSessionWithLLM:
                 f"Expected architecture info in output: {all_output}"
 
         finally:
-            await core.disconnect()
+            core.disconnect()
 
-    async def test_fetch_all_messages(self, db):
+    def test_fetch_all_messages(self, db):
         """Send multiple messages and verify all are collected."""
         callback = CollectingCallback()
         sandbox = IdaSandbox(db)
@@ -143,16 +141,16 @@ class TestChatSessionWithLLM:
             model="openrouter/meta-llama/llama-3.3-70b-instruct:free",
         )
 
-        await core.connect()
+        core.connect()
         try:
             # Send first message
-            await core.process_message(
+            core.process_message(
                 "Use the ida_script tool to call get_binary_info() and print the md5 hash."
             )
             first_batch = list(callback.events)
 
             # Send second message
-            await core.process_message(
+            core.process_message(
                 "Use the ida_script tool to call enumerate_functions() and print how many functions there are."
             )
 
@@ -166,9 +164,9 @@ class TestChatSessionWithLLM:
                 f"Expected at least 2 text responses, got {len(callback.texts)}"
 
         finally:
-            await core.disconnect()
+            core.disconnect()
 
-    async def test_script_error_recovery(self, db):
+    def test_script_error_recovery(self, db):
         """Agent should handle script errors and continue."""
         callback = CollectingCallback()
         sandbox = IdaSandbox(db)
@@ -181,10 +179,10 @@ class TestChatSessionWithLLM:
             model="openrouter/meta-llama/llama-3.3-70b-instruct:free",
         )
 
-        await core.connect()
+        core.connect()
         try:
             # Ask agent to do something - the sandbox will handle errors gracefully
-            await core.process_message(
+            core.process_message(
                 "Use the ida_script tool to print the number of functions in this binary."
             )
 
@@ -193,10 +191,9 @@ class TestChatSessionWithLLM:
                 "Expected either text or error events"
 
         finally:
-            await core.disconnect()
+            core.disconnect()
 
 
-@pytest.mark.asyncio
 class TestChatSessionWithoutLLM:
     """Tests that verify the chat session setup without requiring an LLM.
 
@@ -261,11 +258,11 @@ class TestChatSessionWithoutLLM:
         )
         assert "metapc" in result
 
-    async def test_core_not_connected_raises(self, db):
+    def test_core_not_connected_raises(self, db):
         """Calling process_message before connect() raises RuntimeError."""
         sandbox = IdaSandbox(db)
         callback = CollectingCallback()
         core = IDAChatCorePi(db=db, callback=callback, script_executor=sandbox.execute)
 
         with pytest.raises(RuntimeError, match="Not connected"):
-            await core.process_message("hello")
+            core.process_message("hello")

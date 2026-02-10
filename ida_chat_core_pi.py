@@ -1,9 +1,12 @@
 """
-IDA Chat Core (Pi-Mono) - Chat backend using pi-mono agent harness.
+IDA Chat Core (Pi-Mono) - Chat backend using embedded JS agent harness.
 
-Drop-in replacement for IDAChatCore that uses pi-mono instead of
-Claude Agent SDK. Supports multiple LLM providers via OpenRouter
-and other pi-mono backends.
+Drop-in replacement for IDAChatCore that uses pi-mono (via PythonMonkey)
+instead of Claude Agent SDK. Supports multiple LLM providers via
+OpenRouter and other OpenAI-compatible backends.
+
+The agent runs entirely in-process: JS in SpiderMonkey for the agent
+loop, Python for HTTP and tool execution. No subprocess, no Node.js.
 """
 
 import logging
@@ -67,10 +70,13 @@ def _load_system_prompt() -> str:
 
 
 class IDAChatCorePi:
-    """Chat backend using pi-mono agent harness.
+    """Chat backend using embedded pi-mono agent harness.
 
     Implements the same interface as IDAChatCore but uses pi-mono for
     LLM communication instead of Claude Agent SDK.
+
+    The agent loop runs synchronously in-process (JS in SpiderMonkey).
+    Tool execution happens via Python callback during the JS agent loop.
     """
 
     def __init__(
@@ -110,25 +116,26 @@ class IDAChatCorePi:
         self._cancelled = True
         logger.info("Cancel requested")
 
-    async def connect(self) -> None:
-        """Initialize and start the pi-mono agent server."""
+    def connect(self) -> None:
+        """Initialize and start the embedded agent harness."""
         logger.info("=" * 60)
         logger.info(f"Starting pi-mono agent (model={self.model})")
 
         system_prompt = _load_system_prompt()
 
         self._bridge = PiMonoBridge()
-        await self._bridge.start(
+        self._bridge.start(
             system_prompt=system_prompt,
             model=self.model,
+            tool_callback=self._execute_script,
         )
 
         logger.info("Pi-mono agent connected and ready")
 
-    async def disconnect(self) -> None:
-        """Stop the agent server."""
+    def disconnect(self) -> None:
+        """Stop the agent harness."""
         if self._bridge:
-            await self._bridge.stop()
+            self._bridge.stop()
             self._bridge = None
 
     def _default_execute_script(self, code: str) -> str:
@@ -150,11 +157,12 @@ class IDAChatCorePi:
         finally:
             sys.stdout = old_stdout
 
-    async def process_message(self, user_input: str) -> str:
+    def process_message(self, user_input: str) -> str:
         """Process a user message through the pi-mono agent.
 
-        The agent loop is handled by pi-mono. When the agent calls the
-        ida_script tool, we execute the code locally and return the result.
+        The entire agent loop runs synchronously. The JS harness calls
+        the LLM (via Python HTTP) and executes tools (via Python callback)
+        in a loop until the agent is done.
 
         Args:
             user_input: The user's message/query.
@@ -173,19 +181,16 @@ class IDAChatCorePi:
 
         self._cancelled = False
         all_script_outputs: list[str] = []
-        current_turn = 0
 
-        async for event in self._bridge.prompt(user_input):
-            if self._cancelled:
-                logger.info("Operation cancelled by user")
-                self.callback.on_error("Operation cancelled")
-                break
+        # The entire agent loop happens in this single call.
+        # Tool execution occurs inside the JS harness via the Python callback.
+        events = self._bridge.prompt(user_input, self.max_turns)
 
+        for event in events:
             if event.type == "thinking":
                 self.callback.on_thinking()
 
             elif event.type == "turn_start":
-                current_turn = event.turn
                 self.callback.on_turn_start(event.turn, self.max_turns)
                 self.callback.on_thinking()
 
@@ -197,48 +202,20 @@ class IDAChatCorePi:
                     if self.history:
                         self.history.append_assistant_message(text)
 
-            elif event.type == "text_delta":
-                # Streaming text delta - could be used for real-time display
-                pass
-
             elif event.type == "tool_call":
                 self.callback.on_thinking_done()
-
-                if event.tool_name == "ida_script":
-                    code = event.args.get("code", "")
-                    logger.info(f"Executing ida_script ({len(code)} chars)")
-
+                code = event.code
+                if code:
                     self.callback.on_script_code(code)
 
-                    # Execute the script
-                    try:
-                        output = self._execute_script(code)
-                        is_error = False
-                    except Exception as e:
-                        output = f"Script error: {e}"
-                        is_error = True
-
+            elif event.type == "tool_result":
+                output = event.output
+                if output:
                     all_script_outputs.append(output)
-
-                    if output:
-                        self.callback.on_script_output(output)
-
+                    self.callback.on_script_output(output)
                     if self.history:
-                        self.history.append_script_execution(code, output)
-
-                    # Send result back to agent
-                    await self._bridge.send_tool_result(
-                        event.tool_call_id,
-                        output,
-                        is_error=is_error,
-                    )
-                else:
-                    # Unknown tool - send error back
-                    await self._bridge.send_tool_result(
-                        event.tool_call_id,
-                        f"Unknown tool: {event.tool_name}",
-                        is_error=True,
-                    )
+                        # Find the matching tool_call code
+                        self.history.append_script_execution("", output)
 
             elif event.type == "turn_end":
                 logger.info(f"Turn {event.turn} complete")
@@ -247,11 +224,9 @@ class IDAChatCorePi:
                 logger.info(f"Agent done after {event.turns} turns")
                 if self.verbose:
                     self.callback.on_result(event.turns, None)
-                break
 
             elif event.type == "error":
                 logger.error(f"Agent error: {event.message}")
                 self.callback.on_error(event.message)
-                break
 
         return "\n".join(all_script_outputs) if all_script_outputs else ""
