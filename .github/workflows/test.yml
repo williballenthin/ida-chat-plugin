@@ -1,0 +1,98 @@
+name: Tests
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+permissions: read-all
+
+jobs:
+  unit-tests:
+    name: Unit tests (no IDA)
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+    - name: Checkout with submodules
+      uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+      with:
+        submodules: recursive
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2b9c # v5.0.0
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Setup uv
+      uses: astral-sh/setup-uv@61cb8a9741eeb8a550a1b8544337180c0fc8476b # v7.2.0
+
+    - name: Install dependencies
+      run: |
+        pip install pydantic-ai pydantic-monty pytest pytest-asyncio pytest-timeout
+        pip install -e deps/idawilli/ida-codemode-api
+        pip install -e deps/idawilli/ida-codemode-sandbox
+
+    - name: Run unit tests
+      run: |
+        python -m pytest tests/test_agent_unit.py -v --timeout=60
+      env:
+        OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+  ida-integration-tests:
+    name: IDA integration tests on IDA ${{ matrix.ida.version }} / Python ${{ matrix.python-version }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11"]
+        ida:
+          - version: "9.2"
+            tag: "ida-pro:9.2"
+    steps:
+    - name: Checkout with submodules
+      uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+      with:
+        submodules: recursive
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2b9c # v5.0.0
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Setup uv
+      uses: astral-sh/setup-uv@61cb8a9741eeb8a550a1b8544337180c0fc8476b # v7.2.0
+
+    - name: Install Python dependencies
+      run: |
+        pip install idapro ida-domain pydantic-ai pydantic-monty pytest pytest-asyncio pytest-timeout
+        pip install -e deps/idawilli/ida-codemode-api
+        pip install -e deps/idawilli/ida-codemode-sandbox
+
+    - name: Install IDA ${{ matrix.ida.version }}
+      run: |
+        uv run --with ida-hcli hcli --disable-updates ida install --download-id ${{ matrix.ida.tag }} --license-id ${{ secrets.IDA_LICENSE_ID }} --set-default --yes
+      env:
+        HCLI_API_KEY: ${{ secrets.HCLI_API_KEY }}
+        IDA_LICENSE_ID: ${{ secrets.IDA_LICENSE_ID }}
+
+    - name: Configure IDA
+      run: |
+        python -c "
+        import idapro
+        import ida_registry
+        ida_registry.reg_write_int('EULA 90', 1)
+        ida_registry.reg_write_int('AutoUseLumina', 0)
+        ida_registry.reg_write_int('AutoCheckUpdates', 0)
+        "
+
+    - name: Run integration tests
+      if: ${{ env.IDA_LICENSE_ID != 0 }}
+      run: |
+        python -m pytest tests/ -v --timeout=120
+      env:
+        IDA_LICENSE_ID: ${{ secrets.IDA_LICENSE_ID }}
+        OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
