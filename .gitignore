@@ -30,3 +30,8 @@ CLAUDE.md
 agentio.json
 
 debug.log
+
+# Agent server build artifacts (esbuild)
+agent_server/dist/
+agent_server/build.mjs
+agent_server/shims/
