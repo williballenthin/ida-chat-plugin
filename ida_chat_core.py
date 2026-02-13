@@ -18,6 +18,7 @@ from typing import Callable, Protocol, TYPE_CHECKING
 import claude_code_transcripts
 
 if TYPE_CHECKING:
+    from ida_chat_backend import ChatBackend
     from ida_chat_history import MessageHistory
 
 # Set up debug logging to file
@@ -271,6 +272,7 @@ class IDAChatCore:
         verbose: bool = False,
         max_turns: int = 20,
         history: "MessageHistory | None" = None,
+        backend: "ChatBackend | None" = None,
     ):
         """Initialize the chat core.
 
@@ -283,12 +285,25 @@ class IDAChatCore:
             verbose: If True, report additional stats.
             max_turns: Maximum agentic turns before stopping (default 20).
             history: Optional MessageHistory for persisting conversations.
+            backend: Optional ChatBackend to delegate to. When provided,
+                the core acts as a thin wrapper and all LLM interaction is
+                handled by the backend. When None (default), uses the built-in
+                Claude Agent SDK integration.
         """
         self.db = db
         self.callback = callback
         self.verbose = verbose
         self.max_turns = max_turns
         self.history = history
+        self._backend = backend
+
+        # When a backend is provided, delegate everything to it
+        if backend is not None:
+            self.client = None
+            self._cancelled = False
+            self._execute_script = lambda code: ""  # unused
+            return
+
         self.client: ClaudeSDKClient | None = None
         self._cancelled = False
         # Use injected executor or default to direct execution
@@ -296,11 +311,17 @@ class IDAChatCore:
 
     def request_cancel(self) -> None:
         """Request cancellation of the current operation."""
+        if self._backend is not None:
+            self._backend.request_cancel()
+            return
         self._cancelled = True
         logger.info("Cancel requested")
 
     async def connect(self) -> None:
         """Initialize and connect the Agent SDK client."""
+        if self._backend is not None:
+            await self._backend.connect()
+            return
         logger.info("=" * 60)
         logger.info("Connecting to Claude Agent SDK")
         logger.info(f"CWD: {PROJECT_DIR}")
@@ -328,6 +349,9 @@ class IDAChatCore:
 
     async def disconnect(self) -> None:
         """Disconnect the Agent SDK client."""
+        if self._backend is not None:
+            await self._backend.disconnect()
+            return
         if self.client:
             await self.client.disconnect()
             self.client = None
@@ -460,12 +484,17 @@ class IDAChatCore:
         - It responds without any <idascript> tags (task complete)
         - Maximum turns is reached
 
+        When a ChatBackend is configured, delegates entirely to the backend.
+
         Args:
             user_input: The user's message/query.
 
         Returns:
             Combined script outputs as a string.
         """
+        if self._backend is not None:
+            return await self._backend.process_message(user_input)
+
         if not self.client:
             raise RuntimeError("Client not connected. Call connect() first.")
 

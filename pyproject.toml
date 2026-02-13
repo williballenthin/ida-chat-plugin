@@ -38,6 +38,16 @@ dev = [
     "taskipy>=1.14.1",
     "python-semantic-release>=10.3.1",
 ]
+pydantic-ai = [
+    "pydantic-ai-slim[openrouter]",
+    "ida-codemode-sandbox",
+]
+test = [
+    "pytest",
+    "pytest-asyncio",
+    "pydantic-ai-slim[openrouter]",
+    "ida-codemode-sandbox",
+]
 
 [tool.taskipy.tasks]
 current-version = "semantic-release version --print-last-released"
