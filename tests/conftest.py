@@ -10,7 +10,7 @@ import pytest
 
 TESTS_DIR = Path(__file__).resolve().parent
 # Re-use the test binary from the codemode sandbox package
-SANDBOX_TEST_DATA = TESTS_DIR.parent / "deps" / "idawilli" / "ida-codemode-sandbox" / "tests" / "data"
+SANDBOX_TEST_DATA = TESTS_DIR.parent / "deps" / "idawilli" / "ida-codemode" / "packages" / "ida-codemode-sandbox" / "tests" / "data"
 TEST_BINARY = SANDBOX_TEST_DATA / "Practical Malware Analysis Lab 01-01.exe_"
 
 

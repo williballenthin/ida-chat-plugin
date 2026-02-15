@@ -64,22 +64,38 @@ class RecordingCallback:
 
 
 class TestSandboxDirect:
-    """Test the codemode sandbox directly with a real database."""
+    """Test the codemode sandbox directly with a real database.
 
-    def test_sandbox_enumerate_functions(self, db):
+    The new API uses expect_ok() + get_functions() style callbacks
+    with strict type checking enabled by default.
+    """
+
+    def test_sandbox_get_functions(self, db):
         """Sandbox can enumerate functions from a real binary."""
         sandbox = IdaSandbox(db)
-        result = sandbox.run("functions = enumerate_functions()\nprint(len(functions))")
-        assert result.ok
+        result = sandbox.run(
+            "funcs = expect_ok(get_functions())\n"
+            "if funcs is not None:\n"
+            "    print(len(funcs['functions']))\n"
+            "else:\n"
+            "    print(0)"
+        )
+        assert result.ok, f"Sandbox error: {result.error}"
         stdout = "".join(result.stdout).strip()
         count = int(stdout)
         assert count > 0, f"Expected functions, got {count}"
 
-    def test_sandbox_get_binary_info(self, db):
+    def test_sandbox_get_database_metadata(self, db):
         """Sandbox can retrieve binary metadata."""
         sandbox = IdaSandbox(db)
-        result = sandbox.run("info = get_binary_info()\nprint(info['architecture'])")
-        assert result.ok
+        result = sandbox.run(
+            "meta = expect_ok(get_database_metadata())\n"
+            "if meta is not None:\n"
+            "    print(meta['architecture'])\n"
+            "else:\n"
+            "    print('error')"
+        )
+        assert result.ok, f"Sandbox error: {result.error}"
         arch = "".join(result.stdout).strip()
         # IDA uses internal processor names (e.g. "metapc" for x86)
         assert len(arch) > 0, "Architecture should not be empty"
@@ -88,30 +104,46 @@ class TestSandboxDirect:
         """Sandbox can disassemble a function."""
         sandbox = IdaSandbox(db)
         result = sandbox.run(
-            "fns = enumerate_functions()\n"
-            "if len(fns) > 0:\n"
-            "    lines = disassemble_function(fns[0]['address'])\n"
-            "    print(len(lines))\n"
+            "funcs = expect_ok(get_functions())\n"
+            "if funcs is not None and len(funcs['functions']) > 0:\n"
+            "    first = funcs['functions'][0]\n"
+            "    disasm = expect_ok(get_function_disassembly_at(first['address']))\n"
+            "    if disasm is not None:\n"
+            "        print(len(disasm['disassembly']))\n"
+            "    else:\n"
+            "        print(0)\n"
             "else:\n"
             "    print(0)"
         )
-        assert result.ok
+        assert result.ok, f"Sandbox error: {result.error}"
         count = int("".join(result.stdout).strip())
         assert count > 0, "Expected disassembly lines"
 
-    def test_sandbox_enumerate_strings(self, db):
+    def test_sandbox_get_strings(self, db):
         """Sandbox can enumerate strings."""
         sandbox = IdaSandbox(db)
-        result = sandbox.run("strings = enumerate_strings()\nprint(len(strings))")
-        assert result.ok
+        result = sandbox.run(
+            "res = expect_ok(get_strings())\n"
+            "if res is not None:\n"
+            "    print(len(res['strings']))\n"
+            "else:\n"
+            "    print(0)"
+        )
+        assert result.ok, f"Sandbox error: {result.error}"
         count = int("".join(result.stdout).strip())
         assert count >= 0  # binary may have no strings
 
-    def test_sandbox_enumerate_imports(self, db):
+    def test_sandbox_get_imports(self, db):
         """Sandbox can enumerate imports."""
         sandbox = IdaSandbox(db)
-        result = sandbox.run("imports = enumerate_imports()\nprint(len(imports))")
-        assert result.ok
+        result = sandbox.run(
+            "res = expect_ok(get_imports())\n"
+            "if res is not None:\n"
+            "    print(len(res['imports']))\n"
+            "else:\n"
+            "    print(0)"
+        )
+        assert result.ok, f"Sandbox error: {result.error}"
         count = int("".join(result.stdout).strip())
         assert count > 0, "Expected imports in PE binary"
 
@@ -211,9 +243,9 @@ class TestSystemPrompt:
     def test_system_prompt_includes_sandbox_docs(self):
         """System prompt includes sandbox API reference."""
         prompt = _build_system_prompt()
-        assert "enumerate_functions" in prompt
-        assert "get_binary_info" in prompt
-        assert "disassemble_function" in prompt
+        assert "get_functions" in prompt
+        assert "get_database_metadata" in prompt
+        assert "decompile_function_at" in prompt
 
     def test_system_prompt_includes_instructions(self):
         """System prompt includes agent instructions."""
@@ -293,7 +325,7 @@ class TestLLMIntegration:
         await backend.connect()
 
         result = await backend.process_message(
-            "What architecture is this binary? Use get_binary_info() to find out. "
+            "What architecture is this binary? Use get_database_metadata() to find out. "
             "Give a brief one-sentence answer."
         )
 
@@ -313,7 +345,7 @@ class TestLLMIntegration:
 
         await core.connect()
         result = await core.process_message(
-            "How many functions does this binary have? Use enumerate_functions(). "
+            "How many functions does this binary have? Use get_functions(). "
             "Answer in one sentence."
         )
         await core.disconnect()
